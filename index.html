@@ -1,0 +1,1417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BigQuery Execution Graph Viewer</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #21262d;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --amber: #f59e0b;
+    --amber-bg: #451a03;
+    --amber-border: #92400e;
+    --orange: #f97316;
+    --orange-bg: #431407;
+    --yellow: #eab308;
+    --blue: #3b82f6;
+    --blue-bg: #172554;
+    --gray:#4b5563;
+    --green: #22c55e;
+    --teal: #14b8a6;
+    --purple: #a78bfa;
+    --pink: #f472b6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Google Sans', 'Segoe UI', sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+
+  /* Header */
+  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; z-index: 20; }
+  .header-title { font-size: 14px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 8px; }
+  .header-title .badge { background: #1f3a5f; color: var(--accent); font-size: 10px; padding: 2px 6px; border-radius: 10px; border: 1px solid var(--accent); font-weight: 500; }
+  .header-metrics { display: flex; gap: 20px; margin-left: auto; }
+  .metric { display: flex; flex-direction: column; align-items: flex-end; }
+  .metric-val { font-size: 13px; font-weight: 600; color: var(--text); }
+  .metric-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .status-done { color: var(--green); display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; }
+
+  /* Controls */
+  .controls { position: absolute; top: 58px; left: 16px; z-index: 30; display: flex; flex-direction: column; gap: 4px; }
+  .ctrl-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); width: 30px; height: 30px; border-radius: 6px; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: background 0.15s; }
+  .ctrl-btn:hover { background: var(--border); }
+  .ctrl-btn.reset { font-size: 11px; }
+  .zoom-label { color: var(--muted); font-size: 10px; text-align: center; margin-top: 2px; }
+
+  /* Canvas */
+  .canvas-wrap { flex: 1; overflow: hidden; position: relative; }
+  .dot-grid { display: none; }
+  svg.graph { position: absolute; inset: 0; cursor: grab; z-index: 1; overflow: visible; }
+  svg.graph.dragging { cursor: grabbing; }
+
+  /* Tooltip */
+  .tooltip { position: absolute; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; z-index: 100; pointer-events: none; max-width: 300px; font-size: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); opacity: 0; transition: opacity 0.15s; }
+  .tooltip.visible { opacity: 1; }
+  .tt-title { font-weight: 700; font-size: 13px; margin-bottom: 8px; color: var(--text); }
+  .tt-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+  .tt-key { color: var(--muted); }
+  .tt-val { color: var(--text); font-weight: 600; }
+  .tt-bar-wrap { margin-top: 8px; background: var(--surface2); border-radius: 4px; height: 6px; overflow: hidden; }
+  .tt-bar { height: 100%; border-radius: 4px; }
+
+  /* Legend */
+  .legend { position: absolute; bottom: 16px; left: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; z-index: 30; font-size: 11px; }
+  .legend-title { color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-size: 10px; }
+  .legend-items { display: flex; flex-direction: column; gap: 4px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; color: var(--text); }
+  .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .leg-amber { background: var(--amber); }
+  .leg-orange { background: var(--orange); }
+  .leg-blue { background: var(--blue); }
+  .leg-gray { background: #4b5563; }
+  .leg-table { background: var(--teal); border-radius: 50%; }
+
+  /* Mini timeline strip */
+  .timeline-strip { position: absolute; bottom: 16px; right: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; z-index: 30; min-width: 260px; }
+  .ts-title { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  canvas.ts-canvas { display: block; }
+
+  /* Info panel */
+  .info-panel { position: absolute; top: 58px; right: 16px; width: 270px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; z-index: 30; font-size: 12px; }
+  .ip-title { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+  .ip-row { display: flex; justify-content: space-between; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .ip-row:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+  .ip-key { color: var(--muted); }
+  .ip-val { color: var(--text); font-weight: 600; text-align: right; max-width: 150px; word-break: break-all; font-size: 11px; }
+  .ip-val.hot { color: var(--amber); }
+
+  /* Edge hover/selected highlight */
+  .edge-group { cursor: pointer; }
+  .edge-group .edge-vis { transition: stroke-opacity 0.12s; }
+
+  /* Export buttons */
+  .ctrl-sep { width: 30px; height: 1px; background: var(--border); margin: 4px 0; }
+  .ctrl-btn.export { font-size: 10px; font-weight: 600; letter-spacing: 0.3px; color: var(--accent); border-color: var(--accent); }
+  .ctrl-btn.export:hover { background: #1f3a5f; }
+  .ctrl-btn.load-json { color: #22c55e; border-color: #22c55e; }
+  .ctrl-btn.load-json:hover { background: rgba(34,197,94,0.12); }
+
+  /* Theme toggle */
+  .ctrl-btn.theme { font-size: 14px; }
+
+  /* ─── LIGHT THEME ─────────────────────────────────────────────── */
+  body.light {
+    --bg: #f6f8fa;
+    --surface: #ffffff;
+    --surface2: #eaeef2;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --muted: #636c76;
+    --accent: #0969da;
+    --green: #1a7f37;
+    --teal: #0a7c6e;
+  }
+
+  body.light .header-title .badge {
+    background: #ddf4ff; color: #0550ae; border-color: #54aeff;
+  }
+  body.light .ctrl-btn.export:hover { background: #ddf4ff; }
+
+  /* SVG node styles embedded via class */
+
+  /* ─── UPLOAD OVERLAY ───────────────────────────────────────────── */
+  #uploadOverlay {
+    position: fixed; inset: 0; background: var(--bg); z-index: 1000;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  #uploadOverlay.hidden { display: none; }
+  #uploadOverlay.backdrop {
+    background: rgba(0,0,0,0.72);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  .upload-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
+  .upload-logo-text { font-size: 20px; font-weight: 700; color: var(--text); }
+  .upload-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 44px 52px; max-width: 460px; width: 90%; text-align: center;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.5); position: relative;
+  }
+  .drop-zone {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 36px 20px;
+    cursor: pointer; transition: border-color 0.2s, background 0.2s; margin-bottom: 18px;
+  }
+  .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: rgba(88,166,255,0.06); }
+  .drop-icon { font-size: 38px; margin-bottom: 10px; }
+  .drop-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 5px; }
+  .drop-sub { font-size: 12px; color: var(--muted); }
+  .upload-btn {
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 10px 26px; font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: opacity 0.15s; display: inline-flex; align-items: center; gap: 8px;
+  }
+  .upload-btn:hover { opacity: 0.85; }
+  .upload-hint { font-size: 11px; color: var(--muted); margin-top: 14px; line-height: 1.6; }
+  .upload-error { color: #f87171; font-size: 12px; margin-top: 10px; display: none; }
+  .upload-error.visible { display: block; }
+</style>
+</head>
+<body>
+
+<!-- ── Upload Overlay ── -->
+<div id="uploadOverlay">
+  <div class="upload-logo">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M3 3h18v18H3z" fill="#4285f4" opacity="0.2"/><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="#4285f4" stroke-width="2" stroke-linejoin="round"/></svg>
+    <span class="upload-logo-text">BigQuery Execution Graph</span>
+  </div>
+  <div class="upload-card">
+    <button id="btnCloseOverlay" title="Close" style="position:absolute;top:12px;right:14px;background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;line-height:1;display:none;" onclick="if(STAGES_RAW.length>0)document.getElementById('uploadOverlay').classList.add('hidden')">&#x2715;</button>
+    <div class="drop-zone" id="dropZone">
+      <div class="drop-icon">📂</div>
+      <div class="drop-title">Drop BQ Job Details JSON here</div>
+      <div class="drop-sub">Drag &amp; drop your file, or click the button below</div>
+    </div>
+    <input type="file" id="fileInput" accept=".json,application/json" style="display:none">
+    <button class="upload-btn" id="btnSelectFile">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Select JSON File
+    </button>
+    <div class="upload-hint">
+      Accepts BigQuery job details JSON — single job object <code style="color:var(--accent)">{...}</code>
+      or array <code style="color:var(--accent)">[{...}]</code>
+    </div>
+    <div style="margin-top:18px;text-align:left;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">How to get the JSON from BigQuery</div>
+        <button id="btnCopyQuery" title="Copy query" onclick="copyBqQuery()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:5px;padding:2px 10px;font-size:10px;cursor:pointer;transition:color 0.15s,border-color 0.15s;">Copy</button>
+      </div>
+      <pre style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:11px;color:#a5d6ff;font-family:'Courier New',monospace;white-space:pre;overflow-x:auto;line-height:1.6;text-align:left;">SELECT *
+FROM `<span style="color:#fbbf24">&lt;region&gt;</span>`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+WHERE
+  DATE(creation_time) = <span style="color:#fbbf24">&lt;Date&gt;</span>
+  AND job_id = <span style="color:#fbbf24">&lt;job_id&gt;</span></pre>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;">Run in BigQuery console → Save results → JSON (local file)</div>
+    </div>
+    <div style="margin-top:16px;display:flex;align-items:center;gap:7px;background:rgba(34,197,94,0.07);border:1px solid rgba(34,197,94,0.25);border-radius:8px;padding:8px 12px;">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="flex-shrink:0"><circle cx="12" cy="12" r="10" stroke="#22c55e" stroke-width="2"/><path d="M12 8v4m0 4h.01" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/></svg>
+      <span style="font-size:11px;color:#22c55e;line-height:1.5;">Your data stays <strong>local only</strong> — it is processed entirely in your browser and never sent to any server or third party.</span>
+    </div>
+    <div class="upload-error" id="uploadError"></div>
+  </div>
+</div>
+
+<div class="header">
+  <div class="header-title">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 3h18v18H3z" fill="#4285f4" opacity="0.2"/><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="#4285f4" stroke-width="2" stroke-linejoin="round"/></svg>
+    BigQuery Execution Graph
+    <span class="badge">ENTERPRISE</span>
+  </div>
+  <div id="headerJobId" style="font-size:11px;color:var(--muted);max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">— load a JSON file to begin —</div>
+  <div class="header-metrics">
+    <div class="metric"><span class="metric-val">—</span><span class="metric-label">Bytes Scanned</span></div>
+    <div class="metric"><span class="metric-val">—</span><span class="metric-label">Duration</span></div>
+    <div class="metric"><span class="metric-val">—</span><span class="metric-label">Slot Time</span></div>
+    <div class="metric"><span class="metric-val">—</span><span class="metric-label">Rows Out</span></div>
+    <div class="status-done">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#22c55e"/><path d="M7 12l4 4 6-6" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      DONE
+    </div>
+  </div>
+</div>
+
+<div class="canvas-wrap" id="canvasWrap">
+  <div class="dot-grid"></div>
+  <svg class="graph" id="mainSvg" width="100%" height="100%" overflow="visible">
+    <defs>
+      <marker id="arrowDefault" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#30363d"/>
+      </marker>
+      <marker id="arrowHot" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#f59e0b"/>
+      </marker>
+      <marker id="arrowWarm" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#f97316"/>
+      </marker>
+      <marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#3b82f6"/>
+      </marker>
+      <marker id="arrowSelected" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+      </marker>
+      <filter id="glow">
+        <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+        <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+    <g id="graphRoot" transform="translate(20, 20)"></g>
+  </svg>
+</div>
+
+<!-- Controls -->
+<div class="controls">
+  <button class="ctrl-btn" id="btnZoomIn" title="Zoom In">+</button>
+  <button class="ctrl-btn" id="btnZoomOut" title="Zoom Out">−</button>
+  <button class="ctrl-btn reset" id="btnReset" title="Reset View">⊙</button>
+  <div class="zoom-label" id="zoomLabel">100%</div>
+  <div class="ctrl-sep"></div>
+  <button class="ctrl-btn theme" id="btnTheme" title="Switch to Light Theme">☀</button>
+  <div class="ctrl-sep"></div>
+  <button class="ctrl-btn export" id="btnExportSVG" title="Export as SVG">SVG</button>
+  <button class="ctrl-btn export" id="btnExportPNG" title="Export as PNG">PNG</button>
+  <div class="ctrl-sep"></div>
+  <button class="ctrl-btn load-json" id="btnLoadJson" title="Load new JSON file">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+  </button>
+</div>
+
+<!-- Info Panel -->
+<div class="info-panel">
+  <div class="ip-title">Job Details</div>
+  <div class="ip-row"><span class="ip-key">Project</span><span class="ip-val">—</span></div>
+  <div class="ip-row"><span class="ip-key">Reservation</span><span class="ip-val">—</span></div>
+  <div class="ip-row"><span class="ip-key">Start</span><span class="ip-val">—</span></div>
+  <div class="ip-row"><span class="ip-key">End</span><span class="ip-val">—</span></div>
+  <div class="ip-row"><span class="ip-key">Destination</span><span class="ip-val">—</span></div>
+  <div class="ip-row"><span class="ip-key">Total Stages</span><span class="ip-val">—</span></div>
+  <div class="ip-row"><span class="ip-key">Max Wait</span><span class="ip-val">—</span></div>
+  <div class="ip-row"><span class="ip-key">Partitions Modified</span><span class="ip-val">—</span></div>
+</div>
+
+<!-- Legend -->
+<div class="legend">
+  <div class="legend-title">Stage Kind (fill) &middot; Slot Intensity (border)</div>
+  <div class="legend-items">
+    <div class="legend-item"><div class="legend-dot" style="background:#2dd4bf"></div>Input</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#818cf8"></div>Sort</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#d946ef"></div>Join</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#a78bfa"></div>Aggregate</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#60a5fa"></div>Repartition</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#34d399"></div>Compute / Coalesce</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f87171"></div>Output</div>
+    <div style="height:1px;background:var(--border);margin:5px 0"></div>
+    <div class="legend-item"><div class="legend-dot leg-amber"></div>Border &gt;20% — Critical</div>
+    <div class="legend-item"><div class="legend-dot leg-orange"></div>Border &gt;5% — Hot</div>
+    <div class="legend-item"><div class="legend-dot leg-blue"></div>Border &gt;1% — Warm</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#475569"></div>Border &lt;1% — Normal</div>
+    <div class="legend-item"><div class="legend-dot leg-table"></div>Table Source</div>
+  </div>
+</div>
+
+<!-- Timeline strip -->
+<div class="timeline-strip">
+  <div class="ts-title">Slot Activity Timeline (110 s)</div>
+  <canvas class="ts-canvas" id="tsCanvas" width="230" height="50"></canvas>
+</div>
+
+<!-- Tooltip -->
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+// ─── COPY QUERY HELPER ───────────────────────────────────────────────────────────
+function copyBqQuery() {
+  const q = 'SELECT *\nFROM `<region>`.INFORMATION_SCHEMA.JOBS_BY_PROJECT\nWHERE\n  DATE(creation_time) = <Date>\n  AND job_id = <job_id>';
+  navigator.clipboard.writeText(q).then(() => {
+    const b = document.getElementById('btnCopyQuery');
+    b.textContent = '✓ Copied'; b.style.color = '#22c55e'; b.style.borderColor = '#22c55e';
+    setTimeout(() => { b.textContent = 'Copy'; b.style.color = 'var(--muted)'; b.style.borderColor = 'var(--border)'; }, 2000);
+  });
+}
+
+// ─── DYNAMIC DATA (populated after JSON upload) ────────────────────────────────
+let TOTAL_SLOT_MS = 1;
+let TABLES        = [];
+let STAGES_RAW    = [];
+let tableReadStats = {};
+let numIdMap       = {};
+let TIMELINE_DATA  = [];
+let JOB_DURATION_S = 0;
+
+const DATASET_PALETTE = ['#0ea5e9','#14b8a6','#a78bfa','#f472b6','#34d399','#fb923c','#818cf8','#e879f9','#a3e635','#22d3ee'];
+const DATASET_NAMED   = {}; // populate with { DatasetName: '#hexcolor' } for custom dataset colours
+
+// ─── JSON PARSER ─────────────────────────────────────────────────────────────
+function parseJobData(raw) {
+  const job = Array.isArray(raw) ? raw[0] : raw;
+  if (!job || !job.job_stages) throw new Error('No job_stages found. Expected BigQuery job details JSON.');
+
+  // ── Slot total ──
+  TOTAL_SLOT_MS = Math.max(1, parseInt(job.total_slot_ms) || 1);
+
+  // ── Tables from referenced_tables ──
+  const dsColorIdx = {};
+  const getColor = (ds) => {
+    if (DATASET_NAMED[ds]) return DATASET_NAMED[ds];
+    if (dsColorIdx[ds] === undefined) dsColorIdx[ds] = Object.keys(dsColorIdx).length;
+    return DATASET_PALETTE[dsColorIdx[ds] % DATASET_PALETTE.length];
+  };
+  TABLES = (job.referenced_tables || []).map((t, i) => ({
+    id: 'T' + i,
+    label: t.table_id,
+    dataset: t.dataset_id,
+    color: getColor(t.dataset_id),
+    fullRef: t.dataset_id + '.' + t.table_id,
+  }));
+  const tableByRef = {};
+  TABLES.forEach(t => { tableByRef[t.fullRef] = t.id; });
+
+  // ── Stages ──
+  const toHex = n => n.toString(16).toUpperCase().padStart(2, '0');
+  STAGES_RAW = (job.job_stages || []).map(s => {
+    const numId  = parseInt(s.id);
+    const name   = s.name || ('S' + toHex(numId) + ': Compute');
+    const kindRaw = ((name.match(/:\s*(.+)$/) || [])[1] || 'Compute').split('+')[0].trim().toLowerCase();
+    const kindMap = { input:'Input', repartition:'Repartition', sort:'Sort', join:'Join',
+                      aggregate:'Aggregate', coalesce:'Coalesce', output:'Output', compute:'Compute',
+                      hash:'Hash', broadcast:'Broadcast', write:'Output' };
+    const kind  = kindMap[kindRaw] || 'Compute';
+    // Detect source tables from step substeps
+    const tables = [];
+    (s.steps || []).forEach(step => {
+      (step.substeps || []).forEach(sub => {
+        const m = sub.match(/FROM ([A-Za-z0-9_]+\.[A-Za-z0-9_]+)/);
+        if (m) { const tid = tableByRef[m[1]]; if (tid && !tables.includes(tid)) tables.push(tid); }
+      });
+    });
+    const startMs = parseInt(s.start_ms) || 0;
+    const endMs   = parseInt(s.end_ms)   || 0;
+    return {
+      id:            'S' + toHex(numId),
+      label:         name,
+      kind,
+      numId,
+      input_stages:  (s.input_stages || []).map(Number),
+      tables,
+      slot_ms:       parseInt(s.slot_ms)             || 0,
+      rec_in:        parseInt(s.records_read)         || 0,
+      rec_out:       parseInt(s.records_written)      || 0,
+      bytes_written: parseInt(s.shuffle_output_bytes) || 0,
+      wall_ms:       Math.max(0, endMs - startMs),
+      wait_max:      parseFloat(s.wait_ratio_max)     || 0,
+    };
+  });
+
+  // ── Rebuild maps ──
+  numIdMap = {};
+  STAGES_RAW.forEach(s => { numIdMap[s.numId] = s; });
+  tableReadStats = {};
+  STAGES_RAW.forEach(s => s.tables.forEach(tid => {
+    if (!tableReadStats[tid]) tableReadStats[tid] = { rec: 0, stages: [] };
+    tableReadStats[tid].rec += s.rec_in;
+    tableReadStats[tid].stages.push(s.id);
+  }));
+
+  // ── Timeline ──
+  TIMELINE_DATA  = (job.timeline || []).map(t => parseInt(t.active_units) || 0);
+
+  // ── Duration ──
+  const startT = new Date(job.start_time).getTime();
+  const endT   = new Date(job.end_time).getTime();
+  JOB_DURATION_S = (!isNaN(startT) && !isNaN(endT)) ? Math.round((endT - startT) / 1000) : 0;
+
+  // ── Update header metrics ──
+  const totalBytes = parseInt(job.total_bytes_processed) || 0;
+  const bytesStr   = totalBytes === 0          ? '0 B (no scan)'
+                   : totalBytes >= 1e12        ? (totalBytes/1e12).toFixed(2)+' TB'
+                   : totalBytes >= 1e9         ? (totalBytes/1e9).toFixed(1)+' GB'
+                   : totalBytes >= 1e6         ? (totalBytes/1e6).toFixed(1)+' MB'
+                   :                             (totalBytes/1e3).toFixed(0)+' KB';
+  const slotHrStr  = (TOTAL_SLOT_MS / 3600000).toFixed(1) + ' slot-hr';
+  const outputStage = [...STAGES_RAW].reverse().find(s => s.kind === 'Output') || STAGES_RAW[STAGES_RAW.length - 1];
+  const rowsOut    = outputStage ? outputStage.rec_out : 0;
+  document.title   = 'BQ Execution Graph \u2014 ' + (job.job_id || 'Job');
+  const mvs = document.querySelectorAll('.metric-val');
+  if (mvs[0]) mvs[0].textContent = bytesStr;
+  if (mvs[1]) mvs[1].textContent = JOB_DURATION_S + ' s';
+  if (mvs[2]) mvs[2].textContent = slotHrStr;
+  if (mvs[3]) mvs[3].textContent = fmtRec(rowsOut);
+  const jobIdEl = document.getElementById('headerJobId');
+  if (jobIdEl) jobIdEl.textContent = job.job_id || '';
+  const badge = document.querySelector('.header-title .badge');
+  if (badge && job.edition) badge.textContent = job.edition;
+
+  // ── Info panel ──
+  const dst     = job.destination_table || {};
+  const dstStr  = dst.dataset_id ? dst.dataset_id + '.' + dst.table_id : '\u2014';
+  const resId   = (job.reservation_id || '\u2014').split(':').pop();
+  const startStr = (job.start_time || '').replace(' UTC','').substring(0, 19);
+  const endStr   = (job.end_time   || '').replace(' UTC','').substring(0, 19);
+  const maxWS    = STAGES_RAW.reduce((a, b) => a.wait_max > b.wait_max ? a : b, STAGES_RAW[0] || {wait_max:0});
+  const ipRows   = document.querySelectorAll('.ip-row');
+  const setRow   = (i, k, v, hot=false) => {
+    if (!ipRows[i]) return;
+    ipRows[i].querySelector('.ip-key').textContent = k;
+    const ve = ipRows[i].querySelector('.ip-val');
+    ve.textContent = v; ve.className = 'ip-val' + (hot ? ' hot' : '');
+  };
+  setRow(0, 'Project',    job.project_id || '\u2014');
+  setRow(1, 'Reservation', resId);
+  setRow(2, 'Start',      startStr);
+  setRow(3, 'End',        endStr);
+  setRow(4, 'Destination', dstStr);
+  setRow(5, 'Total Stages', STAGES_RAW.length);
+  setRow(6, 'Max Wait', maxWS.id ? maxWS.id + ' \u00b7 ' + (maxWS.wait_max*100).toFixed(1)+'%' : '\u2014', maxWS.wait_max > 0.5);
+  setRow(7, 'Partitions Modified', job.total_modified_partitions || '\u2014');
+  document.querySelector('.ts-title').textContent = 'Slot Activity Timeline (' + JOB_DURATION_S + ' s)';
+}
+
+// ─── FILE UPLOAD WIRING ────────────────────────────────────────────────────────
+function loadJsonFile(file) {
+  const errEl = document.getElementById('uploadError');
+  errEl.classList.remove('visible');
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      parseJobData(JSON.parse(ev.target.result));
+      document.getElementById('uploadOverlay').classList.add('hidden');
+      render();
+      updateMarkers();
+      drawTimeline();
+      requestAnimationFrame(() => requestAnimationFrame(initView));
+    } catch (err) {
+      errEl.textContent = 'Error: ' + err.message;
+      errEl.classList.add('visible');
+    }
+  };
+  reader.onerror = () => { errEl.textContent = 'Could not read file.'; errEl.classList.add('visible'); };
+  reader.readAsText(file);
+}
+
+document.getElementById('btnSelectFile').addEventListener('click', () => document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', (e) => { if (e.target.files[0]) loadJsonFile(e.target.files[0]); });
+const dropZone = document.getElementById('dropZone');
+dropZone.addEventListener('click', () => document.getElementById('fileInput').click());
+dropZone.addEventListener('dragover',  (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) loadJsonFile(e.dataTransfer.files[0]);
+});
+// Page-wide drop when overlay is visible
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  if (!document.getElementById('uploadOverlay').classList.contains('hidden') && e.dataTransfer.files[0])
+    loadJsonFile(e.dataTransfer.files[0]);
+});
+// ESC or click-outside closes overlay (only when a graph is already rendered)
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && STAGES_RAW.length > 0)
+    document.getElementById('uploadOverlay').classList.add('hidden');
+});
+document.getElementById('uploadOverlay').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('uploadOverlay') && STAGES_RAW.length > 0)
+    document.getElementById('uploadOverlay').classList.add('hidden');
+});
+
+// ─── PLACEHOLDER (replaced at runtime by parseJobData) ─────────────────────────
+// dummy STAGES_RAW array — kept so layout/render functions always have an array
+const _STAGES_PLACEHOLDER = [
+  {id:'S00',label:'S00: Input',     kind:'Input',      numId:0,  input_stages:[],          tables:['T0'],     slot_ms:7580684,  rec_in:1877500184, rec_out:1876145196, bytes_written:153809082996,  wall_ms:4890,  wait_max:0.134},
+  {id:'S01',label:'S01: Input',     kind:'Input',      numId:1,  input_stages:[],          tables:['T3'],     slot_ms:56,       rec_in:39,         rec_out:39,         bytes_written:671,           wall_ms:72,    wait_max:0.000},
+  {id:'S02',label:'S02: Input',     kind:'Input',      numId:2,  input_stages:[],          tables:['T4'],     slot_ms:59,       rec_in:124,        rec_out:123,        bytes_written:5535,          wall_ms:73,    wait_max:0.000},
+  {id:'S03',label:'S03: Input',     kind:'Input',      numId:3,  input_stages:[],          tables:['T1'],     slot_ms:39679,    rec_in:4560949,    rec_out:4560949,    bytes_written:200681756,     wall_ms:3898,  wait_max:0.000},
+  {id:'S04',label:'S04: Input',     kind:'Input',      numId:4,  input_stages:[],          tables:['T1'],     slot_ms:43263,    rec_in:4560949,    rec_out:4560949,    bytes_written:228047450,     wall_ms:4944,  wait_max:0.006},
+  {id:'S05',label:'S05: Input',     kind:'Input',      numId:5,  input_stages:[],          tables:['T9'],     slot_ms:2694591,  rec_in:757261302,  rec_out:719694996,  bytes_written:43171414408,   wall_ms:7031,  wait_max:0.007},
+  {id:'S06',label:'S06: Repartition',kind:'Repartition',numId:6, input_stages:[0],         tables:[],         slot_ms:184915,   rec_in:65144394,   rec_out:65144394,   bytes_written:5340437089,    wall_ms:3750,  wait_max:0.122},
+  {id:'S07',label:'S07: Repartition',kind:'Repartition',numId:7, input_stages:[0,6],       tables:[],         slot_ms:175909,   rec_in:71388732,   rec_out:71388732,   bytes_written:5852316332,    wall_ms:3905,  wait_max:0.122},
+  {id:'S08',label:'S08: Repartition',kind:'Repartition',numId:8, input_stages:[0,7],       tables:[],         slot_ms:173425,   rec_in:71884107,   rec_out:71884107,   bytes_written:5892898560,    wall_ms:4006,  wait_max:0.121},
+  {id:'S09',label:'S09: Repartition',kind:'Repartition',numId:9, input_stages:[0,8],       tables:[],         slot_ms:170464,   rec_in:62967998,   rec_out:62967998,   bytes_written:5161946547,    wall_ms:4267,  wait_max:0.118},
+  {id:'S0A',label:'S0A: Repartition',kind:'Repartition',numId:10,input_stages:[5],         tables:[],         slot_ms:299345,   rec_in:84260392,   rec_out:84260392,   bytes_written:5054327784,    wall_ms:5516,  wait_max:0.001},
+  {id:'S0B',label:'S0B: Repartition',kind:'Repartition',numId:11,input_stages:[5,10],      tables:[],         slot_ms:292112,   rec_in:86273315,   rec_out:86273315,   bytes_written:5175085716,    wall_ms:5458,  wait_max:0.001},
+  {id:'S0C',label:'S0C: Repartition',kind:'Repartition',numId:12,input_stages:[5,11],      tables:[],         slot_ms:324555,   rec_in:100836810,  rec_out:100836810,  bytes_written:6048676908,    wall_ms:5455,  wait_max:0.001},
+  {id:'S0D',label:'S0D: Repartition',kind:'Repartition',numId:13,input_stages:[5,12],      tables:[],         slot_ms:352000,   rec_in:119000000,  rec_out:119000000,  bytes_written:4012774759,    wall_ms:5037,  wait_max:0.001},
+  {id:'S0E',label:'S0E: Input',     kind:'Input',      numId:14, input_stages:[],          tables:['T8'],     slot_ms:101,      rec_in:13,         rec_out:11,         bytes_written:519,           wall_ms:73,    wait_max:0.000},
+  {id:'S10',label:'S10: Input',     kind:'Input',      numId:16, input_stages:[],          tables:['T2'],     slot_ms:48,       rec_in:0,          rec_out:0,          bytes_written:0,             wall_ms:46,    wait_max:0.000},
+  {id:'S11',label:'S11: Input',     kind:'Input',      numId:17, input_stages:[],          tables:['T6'],     slot_ms:58,       rec_in:470,        rec_out:470,        bytes_written:6580,          wall_ms:436,   wait_max:0.000},
+  {id:'S12',label:'S12: Sort+',     kind:'Sort',       numId:18, input_stages:[3,4],       tables:[],         slot_ms:124409,   rec_in:9121898,    rec_out:8983122,    bytes_written:458139222,     wall_ms:638,   wait_max:0.001},
+  {id:'S13',label:'S13: Input',     kind:'Input',      numId:19, input_stages:[],          tables:['T5'],     slot_ms:87,       rec_in:4472,       rec_out:4472,       bytes_written:168906,        wall_ms:434,   wait_max:0.000},
+  {id:'S14',label:'S14: Aggregate+',kind:'Aggregate',  numId:20, input_stages:[2],         tables:[],         slot_ms:254,      rec_in:123,        rec_out:123,        bytes_written:6642,          wall_ms:427,   wait_max:0.000},
+  {id:'S15',label:'S15: Aggregate', kind:'Aggregate',  numId:21, input_stages:[1],         tables:[],         slot_ms:101,      rec_in:39,         rec_out:39,         bytes_written:671,           wall_ms:401,   wait_max:0.000},
+  {id:'S16',label:'S16: Input',     kind:'Input',      numId:22, input_stages:[],          tables:['T7'],     slot_ms:157,      rec_in:148,        rec_out:148,        bytes_written:1427,          wall_ms:397,   wait_max:0.000},
+  {id:'S17',label:'S17: Sort+',     kind:'Sort',       numId:23, input_stages:[0,9],       tables:[],         slot_ms:15136076, rec_in:1876145196, rec_out:166923395,  bytes_written:12166737434,   wall_ms:10334, wait_max:0.019},
+  {id:'S18',label:'S18: Input',     kind:'Input',      numId:24, input_stages:[],          tables:['T0'],     slot_ms:51916423, rec_in:1877500184, rec_out:1876145196, bytes_written:1516693998744, wall_ms:31619, wait_max:0.882},
+  {id:'S19',label:'S19: Coalesce',  kind:'Coalesce',   numId:25, input_stages:[14],        tables:[],         slot_ms:6821,     rec_in:11,         rec_out:11,         bytes_written:519,           wall_ms:7590,  wait_max:0.291},
+  {id:'S1A',label:'S1A: Join+',     kind:'Join',       numId:26, input_stages:[13,25,5],   tables:[],         slot_ms:3834755,  rec_in:719705996,  rec_out:126085,     bytes_written:5294219,       wall_ms:18785, wait_max:0.920},
+  {id:'S1B',label:'S1B: Repartition',kind:'Repartition',numId:27,input_stages:[24],        tables:[],         slot_ms:1941017,  rec_in:17416977,   rec_out:17416977,   bytes_written:13973621684,   wall_ms:8531,  wait_max:0.446},
+  {id:'S1C',label:'S1C: Repartition',kind:'Repartition',numId:28,input_stages:[23],        tables:[],         slot_ms:28269,    rec_in:4173534,    rec_out:4173534,    bytes_written:304202596,     wall_ms:2825,  wait_max:0.104},
+  {id:'S1D',label:'S1D: Coalesce',  kind:'Coalesce',   numId:29, input_stages:[22],        tables:[],         slot_ms:4226,     rec_in:148,        rec_out:148,        bytes_written:1427,          wall_ms:3637,  wait_max:0.142},
+  {id:'S1E',label:'S1E: Coalesce',  kind:'Coalesce',   numId:30, input_stages:[21],        tables:[],         slot_ms:4439,     rec_in:39,         rec_out:39,         bytes_written:671,           wall_ms:4115,  wait_max:0.159},
+  {id:'S1F',label:'S1F: Coalesce',  kind:'Coalesce',   numId:31, input_stages:[20],        tables:[],         slot_ms:3868,     rec_in:123,        rec_out:123,        bytes_written:6642,          wall_ms:4450,  wait_max:0.174},
+  {id:'S20',label:'S20: Join+',     kind:'Join',       numId:32, input_stages:[27,30,29,24,23,19,28,31], tables:[], slot_ms:38127376, rec_in:2066500391, rec_out:502132330, bytes_written:215328590837,  wall_ms:17794, wait_max:1.000},
+  {id:'S21',label:'S21: Coalesce',  kind:'Coalesce',   numId:33, input_stages:[26],        tables:[],         slot_ms:9609,     rec_in:126085,     rec_out:126085,     bytes_written:5294219,       wall_ms:69,    wait_max:0.001},
+  {id:'S22',label:'S22: Join+',     kind:'Join',       numId:34, input_stages:[16,17,32,18,33], tables:[],    slot_ms:15859260, rec_in:1017335452, rec_out:502132330,  bytes_written:186584045267,  wall_ms:6998,  wait_max:0.199},
+  {id:'S23',label:'S23: Repartition',kind:'Repartition',numId:35,input_stages:[34],        tables:[],         slot_ms:1224187,  rec_in:133420902,  rec_out:133420902,  bytes_written:49578388142,   wall_ms:8114,  wait_max:0.141},
+  {id:'S24',label:'S24: Compute',   kind:'Compute',    numId:36, input_stages:[35,34],     tables:[],         slot_ms:2129118,  rec_in:502132330,  rec_out:149687,     bytes_written:3787877,       wall_ms:1649,  wait_max:0.017},
+  {id:'S25',label:'S25: Sort+',     kind:'Sort',       numId:37, input_stages:[36],        tables:[],         slot_ms:3870,     rec_in:149687,     rec_out:1,          bytes_written:72879,         wall_ms:1222,  wait_max:0.020},
+  {id:'S26',label:'S26: Compute',   kind:'Compute',    numId:38, input_stages:[37,34,35],  tables:[],         slot_ms:10474019, rec_in:502133830,  rec_out:502132330,  bytes_written:186584045267,  wall_ms:4953,  wait_max:0.129},
+  {id:'S27',label:'S27: Output',    kind:'Output',     numId:39, input_stages:[38],        tables:[],         slot_ms:18733198, rec_in:502132330,  rec_out:502132330,  bytes_written:149767878585,  wall_ms:9554,  wait_max:0.176},
+]; // _STAGES_PLACEHOLDER end (not used after upload)
+
+// (tableReadStats and numIdMap are built dynamically inside parseJobData)
+
+// ─── LAYOUT ENGINE ─────────────────────────────────────────────────────────────
+const NODE_W = 180, NODE_H = 100, H_GAP = 64, V_GAP = 14;
+const TABLE_W = 162, TABLE_H = 68;
+
+function computeDepths() {
+  const depth = {};
+  // Tables at depth 0
+  TABLES.forEach(t => { depth[t.id] = 0; });
+  // Input stages (reading tables) at depth 1
+  STAGES_RAW.forEach(s => {
+    if (s.input_stages.length === 0) depth[s.id] = 1;
+  });
+  // Others: compute from dependencies (longest path)
+  let changed = true;
+  while (changed) {
+    changed = false;
+    STAGES_RAW.forEach(s => {
+      if (s.input_stages.length === 0) return;
+      const maxDep = Math.max(...s.input_stages.map(depNum => {
+        const depStage = numIdMap[depNum];
+        return depStage ? (depth[depStage.id] || 0) : 0;
+      }));
+      const newDepth = maxDep + 1;
+      if ((depth[s.id] || 0) < newDepth) { depth[s.id] = newDepth; changed = true; }
+    });
+  }
+  return depth;
+}
+
+function layout() {
+  const depth = computeDepths();
+  const maxDepth = Math.max(...Object.values(depth));
+
+  // Group nodes by depth
+  const byDepth = {};
+  for (let d = 0; d <= maxDepth; d++) byDepth[d] = [];
+  TABLES.forEach(t => byDepth[depth[t.id]].push({ ...t, type:'table' }));
+  STAGES_RAW.forEach(s => byDepth[depth[s.id]].push({ ...s, type:'stage' }));
+
+  // Assign positions
+  const positions = {};
+  for (let d = 0; d <= maxDepth; d++) {
+    const nodes = byDepth[d];
+    const w = nodes[0]?.type === 'table' ? TABLE_W : NODE_W;
+    const h = nodes[0]?.type === 'table' ? TABLE_H : NODE_H;
+    const totalH = nodes.length * h + (nodes.length - 1) * V_GAP;
+    const maxRows = 12;
+    const canvasH = maxRows * (NODE_H + V_GAP);
+    const startY = Math.max(0, (canvasH - totalH) / 2);
+    nodes.forEach((node, i) => {
+      const nh = node.type === 'table' ? TABLE_H : NODE_H;
+      positions[node.id] = {
+        x: d * (NODE_W + H_GAP),
+        y: startY + i * (nh + V_GAP),
+        w: node.type === 'table' ? TABLE_W : NODE_W,
+        h: nh,
+        depth: d
+      };
+    });
+  }
+  return { positions, depth, maxDepth };
+}
+
+// ─── THEME STATE ───────────────────────────────────────────────────────────────
+let isDark = localStorage.getItem('bqGraphTheme') !== 'light';
+
+// ─── COLOR HELPERS ─────────────────────────────────────────────────────────────
+// Slot intensity → border/glow/bar color (intensity scale only, bg comes from kindColor)
+function intensityColor(slotMs) {
+  const pct = slotMs / TOTAL_SLOT_MS;
+  if (isDark) {
+    if (pct > 0.20) return { border:'#fbbf24', bar:'#fbbf24', text:'#fde68a', arrow:'arrowHot',  glow:true,  strokeW:'2.5' };
+    if (pct > 0.05) return { border:'#fb923c', bar:'#fb923c', text:'#fed7aa', arrow:'arrowWarm', glow:false, strokeW:'2'   };
+    if (pct > 0.01) return { border:'#60a5fa', bar:'#60a5fa', text:'#bfdbfe', arrow:'arrowBlue', glow:false, strokeW:'1.5' };
+    return                 { border:'#475569', bar:'#64748b', text:'#94a3b8', arrow:'arrowDefault', glow:false, strokeW:'1' };
+  } else {
+    if (pct > 0.20) return { border:'#d97706', bar:'#d97706', text:'#92400e', arrow:'arrowHot',  glow:true,  strokeW:'2.5' };
+    if (pct > 0.05) return { border:'#ea580c', bar:'#ea580c', text:'#9a3412', arrow:'arrowWarm', glow:false, strokeW:'2'   };
+    if (pct > 0.01) return { border:'#2563eb', bar:'#2563eb', text:'#1e3a8a', arrow:'arrowBlue', glow:false, strokeW:'1.5' };
+    return                 { border:'#9ca3af', bar:'#6b7280', text:'#374151', arrow:'arrowDefault', glow:false, strokeW:'1' };
+  }
+}
+
+// Kind → distinct vivid card background + accent colour
+const KIND_COLORS_DARK = {
+  Input:       { bg:'#042f2e', accent:'#2dd4bf', label:'#99f6e4' },
+  Sort:        { bg:'#1e1b4b', accent:'#818cf8', label:'#c7d2fe' },
+  Join:        { bg:'#3b0764', accent:'#d946ef', label:'#f5d0fe' },
+  Aggregate:   { bg:'#2d1657', accent:'#a78bfa', label:'#ede9fe' },
+  Repartition: { bg:'#0c1d5e', accent:'#60a5fa', label:'#bfdbfe' },
+  Coalesce:    { bg:'#2d1b00', accent:'#fbbf24', label:'#fef3c7' },
+  Compute:     { bg:'#022c22', accent:'#34d399', label:'#a7f3d0' },
+  Output:      { bg:'#450a0a', accent:'#f87171', label:'#fecaca' },
+  Hash:        { bg:'#1a2632', accent:'#38bdf8', label:'#bae6fd' },
+  Broadcast:   { bg:'#1f2b20', accent:'#86efac', label:'#dcfce7' },
+};
+const KIND_COLORS_LIGHT = {
+  Input:       { bg:'#f0fdfa', accent:'#0d9488', label:'#134e4a' },
+  Sort:        { bg:'#eef2ff', accent:'#4f46e5', label:'#312e81' },
+  Join:        { bg:'#fdf4ff', accent:'#a21caf', label:'#701a75' },
+  Aggregate:   { bg:'#faf5ff', accent:'#7c3aed', label:'#4c1d95' },
+  Repartition: { bg:'#eff6ff', accent:'#1d4ed8', label:'#1e3a8a' },
+  Coalesce:    { bg:'#fffbeb', accent:'#d97706', label:'#78350f' },
+  Compute:     { bg:'#f0fdf4', accent:'#059669', label:'#064e3b' },
+  Output:      { bg:'#fff1f2', accent:'#dc2626', label:'#7f1d1d' },
+  Hash:        { bg:'#f0f9ff', accent:'#0284c7', label:'#0c4a6e' },
+  Broadcast:   { bg:'#f7fee7', accent:'#65a30d', label:'#365314' },
+};
+function kindColor(kind) {
+  const map = isDark ? KIND_COLORS_DARK : KIND_COLORS_LIGHT;
+  return map[kind] || (isDark ? { bg:'#1a2332', accent:'#64748b', label:'#cbd5e1' } : { bg:'#f8fafc', accent:'#64748b', label:'#334155' });
+}
+
+function kindIcon(kind) {
+  switch (kind) {
+    case 'Input':      return '→';
+    case 'Sort':       return '≡';
+    case 'Join':       return '⊗';
+    case 'Aggregate':  return 'Σ';
+    case 'Repartition':return '⇄';
+    case 'Coalesce':   return '↓';
+    case 'Compute':    return '◆';
+    case 'Output':     return '⊕';
+    default:           return '●';
+  }
+}
+
+function fmtRec(n) {
+  if (!n) return '—';
+  if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
+function fmtSlot(ms) {
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function fmtBytes(b) {
+  if (!b) return '—';
+  if (b >= 1e12) return (b/1e12).toFixed(2)+' TB';
+  if (b >= 1e9) return (b/1e9).toFixed(1)+' GB';
+  if (b >= 1e6) return (b/1e6).toFixed(1)+' MB';
+  return (b/1e3).toFixed(0)+' KB';
+}
+
+function fmtWall(ms) {
+  if (!ms) return '—';
+  if (ms >= 60000) { const m=Math.floor(ms/60000); const s=Math.round((ms%60000)/1000); return `${m}m ${s}s`; }
+  if (ms >= 1000) return (ms/1000).toFixed(1)+'s';
+  return ms+'ms';
+}
+
+// ─── SVG HELPERS ───────────────────────────────────────────────────────────────
+function svgEl(tag, attrs={}) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k,v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+function svgText(parent, x, y, text, attrs={}) {
+  const t = svgEl('text', { x, y, ...attrs });
+  t.textContent = text;
+  parent.appendChild(t);
+  return t;
+}
+
+// ─── RENDER ────────────────────────────────────────────────────────────────────
+function render() {
+  const { positions, depth, maxDepth } = layout();
+  const root = document.getElementById('graphRoot');
+  root.innerHTML = '';
+
+  // Build edges list
+  const edges = [];
+  // Table → Stage edges
+  STAGES_RAW.forEach(s => {
+    s.tables.forEach(tid => {
+      edges.push({ from: tid, to: s.id, rec: s.rec_in, stage: s });
+    });
+  });
+  // Stage → Stage edges
+  STAGES_RAW.forEach(s => {
+    s.input_stages.forEach(depNum => {
+      const depStage = numIdMap[depNum];
+      if (depStage) {
+        edges.push({ from: depStage.id, to: s.id, rec: s.rec_in, stage: s });
+      }
+    });
+  });
+
+  // Draw edges first (behind nodes)
+  const edgeGroup = svgEl('g', { class:'edges' });
+  root.appendChild(edgeGroup);
+
+  edges.forEach((e, eIdx) => {
+    const fp = positions[e.from];
+    const tp = positions[e.to];
+    if (!fp || !tp) return;
+
+    const x1 = fp.x + fp.w;
+    const y1 = fp.y + fp.h / 2;
+    const x2 = tp.x;
+    const y2 = tp.y + tp.h / 2;
+
+    const toStage   = STAGES_RAW.find(s => s.id === e.to);
+    const fromStage = STAGES_RAW.find(s => s.id === e.from);
+    const fromTable = TABLES.find(t => t.id === e.from);
+    const c = toStage ? intensityColor(toStage.slot_ms) : intensityColor(0);
+    const arrowId = c.arrow;
+
+    const dx = (x2 - x1) * 0.5;
+    const dStr = `M${x1},${y1} C${x1+dx},${y1} ${x2-dx},${y2} ${x2},${y2}`;
+    const edgeId = `edge-${e.from}-${e.to}-${eIdx}`;
+
+    // Wrapper group for hover / click
+    const eg = svgEl('g', { id: edgeId, class: 'edge-group' });
+
+    // Visible path
+    const visPath = svgEl('path', {
+      class: 'edge-vis',
+      d: dStr,
+      fill: 'none',
+      stroke: c.border,
+      'stroke-width': '1.5',
+      'stroke-opacity': '0.6',
+      'marker-end': `url(#${arrowId})`,
+      'data-orig-color': c.border,
+      'data-arrow-id': arrowId
+    });
+    eg.appendChild(visPath);
+
+    // Wide transparent hit-area for easier mouse target
+    const hitPath = svgEl('path', {
+      d: dStr, fill: 'none', stroke: 'transparent', 'stroke-width': '14'
+    });
+    eg.appendChild(hitPath);
+
+    // Edge label (record count) for significant edges
+    if (e.rec >= 1000000) {
+      const midX = (x1 + x2) / 2;
+      const midY = (y1 + y2) / 2 - 5;
+      const bg = svgEl('rect', {
+        x: midX - 22, y: midY - 10, width: 44, height: 14,
+        rx: 3, fill: '#0d1117', 'fill-opacity': '0.9', 'pointer-events': 'none'
+      });
+      eg.appendChild(bg);
+      const lbl = svgEl('text', {
+        x: midX, y: midY + 1,
+        'text-anchor': 'middle',
+        fill: c.bar,
+        'font-size': '9',
+        'font-family': 'monospace',
+        'pointer-events': 'none'
+      });
+      lbl.textContent = fmtRec(e.rec);
+      eg.appendChild(lbl);
+    }
+
+    // Tooltip labels
+    const fromLabel = fromStage ? fromStage.label : (fromTable ? fromTable.label : e.from);
+    const toLabel   = toStage   ? toStage.label   : e.to;
+
+    eg.addEventListener('mouseenter', (ev) => {
+      if (selectedEdgeId !== edgeId) {
+        visPath.setAttribute('stroke-width', '3');
+        visPath.setAttribute('stroke-opacity', '0.85');
+        visPath.setAttribute('stroke', '#58a6ff');
+        visPath.setAttribute('marker-end', 'url(#arrowSelected)');
+      }
+      showTooltip(ev, {
+        title: `${fromLabel} \u2192 ${toLabel}`,
+        rows: [
+          ['From',    fromLabel],
+          ['To',      toLabel],
+          ['Records', fmtRec(e.rec)],
+        ]
+      });
+    });
+    eg.addEventListener('mousemove', moveTooltip);
+    eg.addEventListener('mouseleave', () => {
+      if (selectedEdgeId !== edgeId) {
+        visPath.setAttribute('stroke-width', '1.5');
+        visPath.setAttribute('stroke-opacity', '0.6');
+        visPath.setAttribute('stroke', c.border);
+        visPath.setAttribute('marker-end', `url(#${arrowId})`);
+      }
+      hideTooltip();
+    });
+    eg.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (selectedEdgeId === edgeId) {
+        // Deselect
+        visPath.setAttribute('stroke-width', '1.5');
+        visPath.setAttribute('stroke-opacity', '0.6');
+        visPath.setAttribute('stroke', c.border);
+        visPath.setAttribute('marker-end', `url(#${arrowId})`);
+        selectedEdgeId = null;
+      } else {
+        // Clear previous selection
+        if (selectedEdgeId) {
+          const prevEg = document.getElementById(selectedEdgeId);
+          if (prevEg) {
+            const pv = prevEg.querySelector('.edge-vis');
+            if (pv) {
+              pv.setAttribute('stroke-width', '1.5');
+              pv.setAttribute('stroke-opacity', '0.6');
+              pv.setAttribute('stroke', pv.getAttribute('data-orig-color'));
+              pv.setAttribute('marker-end', `url(#${pv.getAttribute('data-arrow-id')})`);
+            }
+          }
+        }
+        selectedEdgeId = edgeId;
+        visPath.setAttribute('stroke-width', '3.5');
+        visPath.setAttribute('stroke-opacity', '1');
+        visPath.setAttribute('stroke', '#58a6ff');
+        visPath.setAttribute('marker-end', 'url(#arrowSelected)');
+        // Bring group to front
+        edgeGroup.appendChild(eg);
+      }
+    });
+
+    edgeGroup.appendChild(eg);
+  });
+
+  // Draw nodes
+  const nodeGroup = svgEl('g', { class:'nodes' });
+  root.appendChild(nodeGroup);
+
+  // Table nodes
+  TABLES.forEach(t => {
+    const p = positions[t.id];
+    if (!p) return;
+    const g = svgEl('g', { class:'node-table', 'data-id': t.id, style:'cursor:pointer' });
+
+    // Glow ring for table
+    const glow = svgEl('rect', {
+      x: p.x - 2, y: p.y - 2, width: p.w + 4, height: p.h + 4,
+      rx: 9, fill: 'none', stroke: t.color, 'stroke-width': '1', 'stroke-opacity': '0.3'
+    });
+    g.appendChild(glow);
+
+    // Card background
+    const tableBg = isDark ? '#0c2040' : '#f0f9ff';
+    const rect = svgEl('rect', {
+      x: p.x, y: p.y, width: p.w, height: p.h,
+      rx: 8, fill: tableBg, stroke: t.color, 'stroke-width': '1.5'
+    });
+    g.appendChild(rect);
+
+    // BQ table icon
+    const iconG = svgEl('g', { transform: `translate(${p.x+10},${p.y+10})` });
+    const iconBg = svgEl('rect', { x:0, y:0, width:20, height:20, rx:4, fill: t.color, 'fill-opacity':'0.15' });
+    iconG.appendChild(iconBg);
+    // Simple grid icon
+    const lines = [[2,5,16,5],[2,9,16,9],[2,13,16,13],[5,2,5,18],[9,2,9,18]];
+    lines.forEach(([x1,y1,x2,y2]) => {
+      iconG.appendChild(svgEl('line',{x1,y1,x2,y2,stroke:t.color,'stroke-width':'1.5','stroke-opacity':'0.8'}));
+    });
+    g.appendChild(iconG);
+
+    // Dataset badge
+    const dsW = t.dataset.length * 5.5 + 8;
+    const dsBg = svgEl('rect', {
+      x: p.x + p.w - dsW - 4, y: p.y + 4, width: dsW, height: 14,
+      rx: 3, fill: t.color, 'fill-opacity':'0.2'
+    });
+    g.appendChild(dsBg);
+    const dsText = svgEl('text', {
+      x: p.x + p.w - dsW/2 - 4, y: p.y + 14,
+      'text-anchor':'middle', fill: t.color, 'font-size':'9', 'font-weight':'600'
+    });
+    dsText.textContent = t.dataset;
+    g.appendChild(dsText);
+
+    // Table name
+    const name = svgEl('text', {
+      x: p.x + 36, y: p.y + 22,
+      fill: isDark ? '#e6edf3' : '#1f2328', 'font-size':'10', 'font-weight':'700',
+      'font-family':'monospace'
+    });
+    name.textContent = t.label.length > 18 ? t.label.substring(0,17)+'…' : t.label;
+    g.appendChild(name);
+
+    // Records read from this table
+    const tStats = tableReadStats[t.id];
+    const tRecTxt = svgEl('text', {
+      x: p.x + 10, y: p.y + p.h - 18,
+      fill: '#14b8a6', 'font-size': '8.5', 'font-family': 'monospace'
+    });
+    tRecTxt.textContent = tStats ? `▶ ${fmtRec(tStats.rec)} rows read` : '▶ 0 rows';
+    g.appendChild(tRecTxt);
+
+    // Green check
+    const ck = svgEl('text', {
+      x: p.x + 10, y: p.y + p.h - 6,
+      fill: '#22c55e', 'font-size': '9'
+    });
+    ck.textContent = '✓ COMPLETE';
+    g.appendChild(ck);
+
+    nodeGroup.appendChild(g);
+
+    // Tooltip
+    g.addEventListener('mouseenter', (e2) => {
+      const ts = tableReadStats[t.id];
+      showTooltip(e2, {
+        title: t.dataset + '.' + t.label,
+        rows: [
+          ['Type',          'Source Table'],
+          ['Dataset',       t.dataset],
+          ['Rows Read',     ts ? fmtRec(ts.rec) : '—'],
+          ['Read by Stages',ts ? ts.stages.join(', ') : '—'],
+        ]
+      });
+    });
+    g.addEventListener('mousemove', moveTooltip);
+    g.addEventListener('mouseleave', hideTooltip);
+  });
+
+  // Stage nodes
+  const maxSlot = Math.max(1, ...STAGES_RAW.map(s => s.slot_ms));
+  STAGES_RAW.forEach(s => {
+    const p = positions[s.id];
+    if (!p) return;
+    const c  = intensityColor(s.slot_ms);
+    const kc = kindColor(s.kind);
+    const pct  = s.slot_ms / TOTAL_SLOT_MS;
+    const barW = Math.max(0, (p.w - 16) * (s.slot_ms / maxSlot));  // scaled to max stage
+    const isHottest = s.slot_ms === maxSlot;
+
+    const g = svgEl('g', { class:'node-stage', 'data-id': s.id, style:'cursor:pointer' });
+
+    // Outer glow for critical / hot stages
+    if (c.glow || pct > 0.05) {
+      const glowRect = svgEl('rect', {
+        x: p.x - 3, y: p.y - 3, width: p.w + 6, height: p.h + 6,
+        rx: 9, fill: 'none', stroke: c.border, 'stroke-width': '2',
+        'stroke-opacity': isHottest ? '0.9' : '0.4',
+        filter: isHottest ? 'url(#glow)' : undefined
+      });
+      g.appendChild(glowRect);
+    }
+
+    // Card — kind-based background, based border
+    const rect = svgEl('rect', {
+      x: p.x, y: p.y, width: p.w, height: p.h,
+      rx: 8, fill: kc.bg, stroke: c.border, 'stroke-width': c.strokeW
+    });
+    g.appendChild(rect);
+
+    // Left accent stripe
+    const stripe = svgEl('rect', {
+      x: p.x, y: p.y + 8, width: 4, height: p.h - 16,
+      rx: 2, fill: kc.accent, 'fill-opacity': '0.85'
+    });
+    g.appendChild(stripe);
+
+    // Kind icon background
+    const iconBg = svgEl('rect', {
+      x: p.x + 7, y: p.y + 7, width: 22, height: 22, rx: 5,
+      fill: kc.accent, 'fill-opacity': '0.25'
+    });
+    g.appendChild(iconBg);
+
+    const iconTxt = svgEl('text', {
+      x: p.x + 18, y: p.y + 23,
+      'text-anchor':'middle', fill: kc.accent, 'font-size':'13', 'font-weight':'bold'
+    });
+    iconTxt.textContent = kindIcon(s.kind);
+    g.appendChild(iconTxt);
+
+    // Stage name — use kind accent for label
+    const labelTxt = svgEl('text', {
+      x: p.x + 36, y: p.y + 17,
+      fill: kc.label, 'font-size':'10', 'font-weight':'700', 'font-family':'monospace'
+    });
+    labelTxt.textContent = s.label;
+    g.appendChild(labelTxt);
+
+    // Slot time text
+    const mutedFill = isDark ? '#94a3b8' : '#636c76';
+    const slotTxt = svgEl('text', {
+      x: p.x + 36, y: p.y + 29,
+      fill: mutedFill, 'font-size':'9'
+    });
+    slotTxt.textContent = `Slot-time: ${fmtSlot(s.slot_ms)}`;
+    g.appendChild(slotTxt);
+
+    // Records in → out
+    const recTxt = svgEl('text', {
+      x: p.x + 36, y: p.y + 40,
+      fill: mutedFill, 'font-size':'8.5'
+    });
+    recTxt.textContent = `▶ ${fmtRec(s.rec_in)}  ◀ ${fmtRec(s.rec_out)}`;
+    g.appendChild(recTxt);
+
+    // Read / Write bytes
+    const rwTxt = svgEl('text', {
+      x: p.x + 36, y: p.y + 51,
+      fill: s.bytes_written > 1e9 ? (isDark ? '#fb923c' : '#ea580c') : mutedFill, 'font-size':'8.5'
+    });
+    rwTxt.textContent = `✎ ${fmtBytes(s.bytes_written)}`;
+    g.appendChild(rwTxt);
+
+    // Wall clock time
+    const wallTxt = svgEl('text', {
+      x: p.x + 36, y: p.y + 62,
+      fill: mutedFill, 'font-size':'8.5'
+    });
+    wallTxt.textContent = `⏱ ${fmtWall(s.wall_ms)}`;
+    g.appendChild(wallTxt);
+
+    // Progress bar background
+    const barBg = svgEl('rect', {
+      x: p.x + 8, y: p.y + p.h - 14, width: p.w - 16, height: 6,
+      rx: 3, fill: isDark ? 'rgba(255,255,255,0.07)' : '#e2e8f0'
+    });
+    g.appendChild(barBg);
+
+    // Progress bar fill — colour
+    const barFill = svgEl('rect', {
+      x: p.x + 8, y: p.y + p.h - 14, width: Math.min(barW, p.w - 16), height: 6,
+      rx: 3, fill: c.bar
+    });
+    g.appendChild(barFill);
+
+    // Slot pct label
+    const pctTxt = svgEl('text', {
+      x: p.x + p.w - 8, y: p.y + p.h - 4,
+      'text-anchor':'end', fill: c.bar, 'font-size':'8', 'font-weight':'600'
+    });
+    pctTxt.textContent = (pct * 100).toFixed(1) + '%';
+    g.appendChild(pctTxt);
+
+    // Green checkmark
+    const ckTxt = svgEl('text', {
+      x: p.x + 8, y: p.y + p.h - 4,
+      fill:'#22c55e', 'font-size':'8'
+    });
+    ckTxt.textContent = '✓';
+    g.appendChild(ckTxt);
+
+    nodeGroup.appendChild(g);
+
+    // Tooltip
+    g.addEventListener('mouseenter', (e2) => {
+      showTooltip(e2, {
+        title: s.label,
+        kind: s.kind,
+        slotMs: s.slot_ms,
+        pct,
+        rows: [
+          ['Records Read',   fmtRec(s.rec_in)],
+          ['Records Written',fmtRec(s.rec_out)],
+          ['Bytes Written',  fmtBytes(s.bytes_written)],
+          ['Slot-time',      fmtSlot(s.slot_ms)],
+          ['Wall Time',      fmtWall(s.wall_ms)],
+          ['Slot %',         (pct*100).toFixed(2)+'%'],
+          ['Max Wait',       (s.wait_max*100).toFixed(1)+'%'],
+          ['Parallelism',    s.wall_ms > 0 ? Math.round(s.slot_ms/s.wall_ms)+'x' : '—'],
+        ]
+      });
+    });
+    g.addEventListener('mousemove', moveTooltip);
+    g.addEventListener('mouseleave', hideTooltip);
+  });
+
+  // Compute SVG viewBox / size
+  const allPos = Object.values(positions);
+  const minX = Math.min(...allPos.map(p => p.x));
+  const minY = Math.min(...allPos.map(p => p.y));
+  const maxX = Math.max(...allPos.map(p => p.x + p.w));
+  const maxY = Math.max(...allPos.map(p => p.y + p.h));
+  const PAD = 40;
+  svgWidth = maxX - minX + PAD*2;
+  svgHeight = maxY - minY + PAD*2;
+  layoutOffX = PAD - minX;
+  layoutOffY = PAD - minY;
+  // Do NOT set transform here — applyTransform() handles it including the offset
+}
+
+// ─── TOOLTIP ──────────────────────────────────────────────────────────────────
+const tooltip = document.getElementById('tooltip');
+let tooltipData = null;
+
+function showTooltip(e, data) {
+  tooltipData = data;
+  let html = `<div class="tt-title">${data.title}</div>`;
+  if (data.rows) {
+    data.rows.forEach(([k,v]) => {
+      html += `<div class="tt-row"><span class="tt-key">${k}</span><span class="tt-val">${v}</span></div>`;
+    });
+  }
+  if (data.pct !== undefined) {
+    const barColor = data.pct > 0.20 ? '#f59e0b' : data.pct > 0.05 ? '#f97316' : '#3b82f6';
+    html += `<div class="tt-bar-wrap"><div class="tt-bar" style="width:${Math.min(100, data.pct*100/0.31*100)}%;background:${barColor}"></div></div>`;
+  }
+  tooltip.innerHTML = html;
+  tooltip.classList.add('visible');
+  moveTooltip(e);
+}
+
+function moveTooltip(e) {
+  const x = e.clientX + 14;
+  const y = e.clientY - 20;
+  const tw = tooltip.offsetWidth;
+  const th = tooltip.offsetHeight;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  tooltip.style.left = (x + tw > vw - 10 ? x - tw - 28 : x) + 'px';
+  tooltip.style.top  = (y + th > vh - 10 ? y - th : y) + 'px';
+}
+
+function hideTooltip() {
+  tooltip.classList.remove('visible');
+}
+
+// ─── ZOOM / PAN ────────────────────────────────────────────────────────────────
+let scale = 0.72, tx = 0, ty = 0;
+let dragging = false, lastX = 0, lastY = 0;
+let svgWidth = 4000, svgHeight = 1200;
+let selectedEdgeId = null;
+let layoutOffX = 0, layoutOffY = 0; // normalization offset set by render()
+
+const svg = document.getElementById('mainSvg');
+const graphRoot = document.getElementById('graphRoot');
+
+function applyTransform() {
+  // Combine pan/zoom with the layout normalisation offset set by render()
+  graphRoot.setAttribute('transform', `translate(${tx + layoutOffX * scale},${ty + layoutOffY * scale}) scale(${scale})`);
+  document.getElementById('zoomLabel').textContent = Math.round(scale * 100) + '%';
+}
+
+function initView() {
+  const container = document.getElementById('canvasWrap');
+  const vw = container.clientWidth;
+  const vh = container.clientHeight;
+  // Fit entire graph to viewport
+  const pad = 40;
+  const scaleX = (vw - pad * 2) / svgWidth;
+  const scaleY = (vh - pad * 2) / svgHeight;
+  scale = Math.min(scaleX, scaleY, 1.0); // never zoom in beyond 100% on small graphs
+  tx = (vw - svgWidth * scale) / 2;
+  ty = (vh - svgHeight * scale) / 2;
+  applyTransform();
+}
+
+svg.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const factor = e.deltaY > 0 ? 0.9 : 1.1;
+  const newScale = Math.max(0.08, Math.min(4, scale * factor));
+  // Zoom toward cursor (in SVG container coordinates)
+  const rect = document.getElementById('canvasWrap').getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  tx = mx - (mx - tx) * (newScale / scale);
+  ty = my - (my - ty) * (newScale / scale);
+  scale = newScale;
+  applyTransform();
+}, { passive: false });
+
+svg.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  dragging = true;
+  lastX = e.clientX; lastY = e.clientY;
+  svg.classList.add('dragging');
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  tx += e.clientX - lastX;
+  ty += e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  applyTransform();
+});
+
+window.addEventListener('mouseup', () => {
+  dragging = false;
+  svg.classList.remove('dragging');
+});
+
+document.getElementById('btnZoomIn').onclick  = () => { scale = Math.min(3, scale * 1.2); applyTransform(); };
+document.getElementById('btnZoomOut').onclick = () => { scale = Math.max(0.15, scale / 1.2); applyTransform(); };
+document.getElementById('btnReset').onclick   = () => { initView(); };
+document.getElementById('btnLoadJson').onclick = () => {
+  const errEl = document.getElementById('uploadError');
+  if (errEl) { errEl.textContent = ''; errEl.classList.remove('visible'); }
+  const fi = document.getElementById('fileInput');
+  if (fi) fi.value = '';
+  document.getElementById('btnCloseOverlay').style.display = 'block';
+  const ov = document.getElementById('uploadOverlay');
+  ov.classList.add('backdrop');
+  ov.classList.remove('hidden');
+};
+
+// ─── THEME TOGGLE ────────────────────────────────────────────────────────
+function updateMarkers() {
+  document.querySelector('#arrowDefault path').setAttribute('fill', isDark ? '#30363d' : '#9ca3af');
+  document.querySelector('#arrowHot path').setAttribute('fill',     isDark ? '#f59e0b' : '#d97706');
+  document.querySelector('#arrowWarm path').setAttribute('fill',    isDark ? '#f97316' : '#ea580c');
+  document.querySelector('#arrowBlue path').setAttribute('fill',    isDark ? '#3b82f6' : '#2563eb');
+}
+
+function applyTheme() {
+  const btn = document.getElementById('btnTheme');
+  if (isDark) {
+    document.body.classList.remove('light');
+    btn.textContent = '☀';
+    btn.title = 'Switch to Light Theme';
+  } else {
+    document.body.classList.add('light');
+    btn.textContent = '🌙';
+    btn.title = 'Switch to Dark Theme';
+  }
+  updateMarkers();
+  selectedEdgeId = null;
+  render();
+  drawTimeline();
+  requestAnimationFrame(() => requestAnimationFrame(initView));
+}
+
+document.getElementById('btnTheme').onclick = () => {
+  isDark = !isDark;
+  localStorage.setItem('bqGraphTheme', isDark ? 'dark' : 'light');
+  applyTheme();
+};
+
+// Click on SVG background → deselect highlighted edge
+svg.addEventListener('click', () => {
+  if (selectedEdgeId) {
+    const prevEg = document.getElementById(selectedEdgeId);
+    if (prevEg) {
+      const pv = prevEg.querySelector('.edge-vis');
+      if (pv) {
+        pv.setAttribute('stroke-width', '1.5');
+        pv.setAttribute('stroke-opacity', '0.6');
+        pv.setAttribute('stroke', pv.getAttribute('data-orig-color'));
+        pv.setAttribute('marker-end', `url(#${pv.getAttribute('data-arrow-id')})`);
+      }
+    }
+    selectedEdgeId = null;
+  }
+});
+
+// ─── EXPORT ────────────────────────────────────────────────────────────────────
+function buildExportSVG() {
+  const clone = svg.cloneNode(true);
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  // Dark background rect
+  const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  bgRect.setAttribute('width', svgWidth + 80); bgRect.setAttribute('height', svgHeight + 80);
+  bgRect.setAttribute('fill', isDark ? '#0d1117' : '#f6f8fa');
+  clone.insertBefore(bgRect, clone.firstChild);
+  // Reset transform to show full graph — use the same layout offset as the live view
+  const gr = clone.querySelector('#graphRoot');
+  gr.setAttribute('transform', `translate(${layoutOffX},${layoutOffY})`);
+  clone.setAttribute('width',   svgWidth + 80);
+  clone.setAttribute('height',  svgHeight + 80);
+  clone.setAttribute('viewBox', `0 0 ${svgWidth + 80} ${svgHeight + 80}`);
+  return clone;
+}
+
+document.getElementById('btnExportSVG').onclick = () => {
+  const clone = buildExportSVG();
+  const str = new XMLSerializer().serializeToString(clone);
+  const blob = new Blob([str], { type: 'image/svg+xml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'bq-execution-graph.svg';
+  a.click();
+};
+
+document.getElementById('btnExportPNG').onclick = () => {
+  const clone = buildExportSVG();
+  const W = svgWidth + 80, H = svgHeight + 80;
+  const str = new XMLSerializer().serializeToString(clone);
+  const blob = new Blob([str], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width  = W * 2;   // 2× for HiDPI
+    canvas.height = H * 2;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(2, 2);
+    ctx.drawImage(img, 0, 0, W, H);
+    URL.revokeObjectURL(url);
+    canvas.toBlob(pngBlob => {
+      const pu = URL.createObjectURL(pngBlob);
+      const a = document.createElement('a');
+      a.href = pu; a.download = 'bq-execution-graph.png'; a.click();
+      URL.revokeObjectURL(pu);
+    }, 'image/png');
+  };
+  img.src = url;
+};
+
+// ─── TIMELINE SPARKLINE ────────────────────────────────────────────────────────
+function drawTimeline() {
+  const canvas = document.getElementById('tsCanvas');
+  const ctx    = canvas.getContext('2d');
+  const W = 230, H = 50;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = isDark ? '#161b22' : '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  const data = TIMELINE_DATA.length ? TIMELINE_DATA : [0];
+  const maxV = Math.max(1, ...data);
+  const n    = data.length;
+  const pts  = data.map((v, i) => [i / Math.max(1, n - 1) * W, H - (v / maxV) * (H - 4)]);
+
+  // Fill
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  pts.forEach(([x, y]) => ctx.lineTo(x, y));
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, 'rgba(245,158,11,0.4)');
+  grad.addColorStop(1, 'rgba(245,158,11,0.02)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  pts.forEach(([x, y], i) => i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
+  ctx.strokeStyle = '#f59e0b';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Axis
+  ctx.strokeStyle = isDark ? '#30363d' : '#d0d7de';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, H); ctx.lineTo(W, H); ctx.stroke();
+
+  // Labels
+  ctx.fillStyle = isDark ? '#6b7280' : '#636c76';
+  ctx.font = '8px sans-serif';
+  ctx.fillText('0s', 0, H - 2);
+  if (JOB_DURATION_S) ctx.fillText(JOB_DURATION_S + 's', W - 22, H - 2);
+  ctx.fillStyle = '#f59e0b';
+  ctx.fillText(maxV.toLocaleString(), 2, 10);
+}
+
+// ─── INIT ──────────────────────────────────────────────────────────────────────
+// Restore saved theme (upload overlay is shown; graph renders after file load)
+if (!isDark) {
+  document.body.classList.add('light');
+  document.getElementById('btnTheme').textContent = '🌙';
+  document.getElementById('btnTheme').title = 'Switch to Dark Theme';
+}
+updateMarkers();
+</script>
+</body>
+</html>
